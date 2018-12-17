@@ -57,7 +57,7 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--scheduler', default="multi-step", type=str,
-                    help="Scheduler for SGD. It can one of multi-step and cosine")
+                    help="Scheduler for SGD. It can one of multi-step or cosine")
 parser.add_argument('--milestones', default="80,100", type=str,
                     help="milestones for MultiStepLR")
 parser.add_argument('--print-freq', '-p', default=10, type=int,
