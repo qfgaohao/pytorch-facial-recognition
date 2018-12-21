@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 import warnings
+import math
 
 import torch
 import torch.nn as nn
@@ -18,11 +19,23 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from facial_recognition.clnet import resnet18_clnet, resnet34_clnet, resnet50_clnet
 from facial_recognition.center_loss import CenterLoss
 from facial_recognition import transforms
+from facial_recognition.sphereface import sphereface4, sphereface10, sphereface20, sphereface36, sphereface64
+from facial_recognition.asoftmax_loss import ASoftmaxLoss
+
 
 # Modified from https://github.com/pytorch/examples/blob/master/imagenet/main.py
 # Add supports for schedulers and other nets such as MobileNetV2.
 
-models = {'resnet18_clnet': resnet18_clnet, 'resnet34_clnet': resnet34_clnet, 'resnet50_clnet': resnet50_clnet}
+models = {
+    'resnet18_clnet': resnet18_clnet,
+    'resnet34_clnet': resnet34_clnet,
+    'resnet50_clnet': resnet50_clnet,
+    'sphereface4': sphereface4,
+    'sphereface10': sphereface10,
+    'sphereface20': sphereface20,
+    'sphereface36': sphereface36,
+    'sphereface64': sphereface64,
+}
 model_names = list(models.keys())
 
 parser = argparse.ArgumentParser(description='PyTorch Center Loss Net Training')
@@ -40,8 +53,10 @@ parser.add_argument('--lambda', default=0.01, dest='lambda_', type=float, metava
                     help='lambda for center loss')
 parser.add_argument('--alpha', default=0.5, type=float, metavar='M',
                     help='alpha for center loss')
-
-
+parser.add_argument('-m', default=4, type=int, metavar='N',
+                    help='m in a softmax loss')
+parser.add_argument('-o', '--optimizer', default='sgd', type=str,
+                    help="The optimizer can be sgd, adam, r")
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
@@ -122,11 +137,12 @@ def main():
     else:
         train_sampler = None
 
-    model = models[args.arch](args.dim, num_classes)
-
+    model = models[args.arch](7, args.dim, num_classes)
     # define loss function (criterion) and optimizer
-    cross_entropy_loss_criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-    center_loss_criterion = CenterLoss(args.dim, num_classes, args.alpha)
+    # cross_entropy_loss_criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    # center_loss_criterion = CenterLoss(args.dim, num_classes, args.alpha)
+    criterion = ASoftmaxLoss(args.m)
+    #criterion = nn.CrossEntropyLoss()
 
     if args.resume:
         logging.info(f"Resume from the model {args.resume}")
@@ -134,19 +150,19 @@ def main():
 
     if args.gpu is not None:
         model = model.cuda(args.gpu)
-        center_loss_criterion.cuda(args.gpu)
+        # center_loss_criterion.cuda(args.gpu)
     elif args.distributed:
         model.cuda()
         model = torch.nn.parallel.DistributedDataParallel(model)
-        center_loss_criterion.cuda()
+        # center_loss_criterion.cuda()
     else:
         if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
             model.features = torch.nn.DataParallel(model.features)
             model.cuda()
-            center_loss_criterion.cuda()
+            # center_loss_criterion.cuda()
         else:
             model = torch.nn.DataParallel(model).cuda()
-            center_loss_criterion.cuda()
+            # center_loss_criterion.cuda()
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -180,29 +196,24 @@ def main():
         if args.distributed:
             train_sampler.set_epoch(epoch)
         scheduler.step()
-        train(train_loader, model, cross_entropy_loss_criterion, center_loss_criterion, optimizer, epoch)
+        train(train_loader, model, criterion, optimizer, epoch)
         if epoch % args.validation_epochs == 0 or epoch == args.epochs - 1:
-            val_accuracy, val_loss, val_cross_entropy_loss, val_center_loss = validate(val_loader, model, cross_entropy_loss_criterion, center_loss_criterion)
+            val_accuracy = validate(val_loader, model)
             logging.info(
                 f"Epoch: {epoch}, "
                 f"Accuracy: {val_accuracy:.4f}, "
-                f"Validation Loss: {val_loss:.4f}, "
-                f"Validation Cross-entropy Loss {val_cross_entropy_loss:.4f}, "
-                f"Validation Center Loss: {val_center_loss:.4f}"
             )
-            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Loss-{val_loss}.pth")
+            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Accuracy-{val_accuracy}.pth")
             model.save(model_path)
             logging.info(f"Saved model {model_path}")
 
 
-def train(train_loader, model, cross_entropy_loss_criterion, center_loss_criterion, optimizer, epoch):
+def train(train_loader, model, criterion, optimizer, epoch):
 
     # switch to train mode
     model.train()
 
     train_loss = 0
-    train_cross_entropy_loss = 0
-    train_center_loss = 0
     train_accuracy = 0
     num = 0
 
@@ -213,15 +224,12 @@ def train(train_loader, model, cross_entropy_loss_criterion, center_loss_criteri
             labels = labels.cuda(args.gpu, non_blocking=True)
 
         # compute output
-        features, logits = model(inputs)
-        cross_entropy_loss = cross_entropy_loss_criterion(logits, labels)
-        center_loss = center_loss_criterion(features, labels)
-
-        loss = cross_entropy_loss + args.lambda_ * center_loss
+        logits = model(inputs)
+        lambda_ = 5**(2 * int((args.epochs - epoch)/5 + 1))
+        loss = criterion(logits, labels, lambda_)
+        #loss = criterion(logits, labels)
 
         train_loss += loss.data
-        train_cross_entropy_loss += cross_entropy_loss.data
-        train_center_loss += center_loss.data
 
         _, pred = logits.topk(1, 1)
         pred = pred.t()
@@ -239,24 +247,17 @@ def train(train_loader, model, cross_entropy_loss_criterion, center_loss_criteri
                 f"Iter: {i}, "
                 f"Accuracy: {train_accuracy / num:.4f}, "
                 f"Training Loss: {train_loss / num:.4f}, "
-                f"Training Cross-entropy Loss {train_cross_entropy_loss / num:.4f}, "
-                f"Training Center Loss: {train_center_loss / num:.4f}"
             )
             train_loss = 0
-            train_cross_entropy_loss = 0
-            train_center_loss = 0
             train_accuracy = 0
             num = 0
 
 
-def validate(val_loader, model, cross_entropy_loss_criterion, center_loss_criterion):
+def validate(val_loader, model):
 
     model.train()
 
     with torch.no_grad():
-        total_loss = 0
-        total_cross_entropy_loss = 0
-        total_center_loss = 0
         total_accuracy = 0
         num = 0
         for i, (inputs, labels) in enumerate(val_loader):
@@ -266,21 +267,13 @@ def validate(val_loader, model, cross_entropy_loss_criterion, center_loss_criter
                 inputs = inputs.cuda(args.gpu, non_blocking=True)
                 labels = labels.cuda(args.gpu, non_blocking=True)
 
-            # compute output
-            features, logits = model(inputs)
-            cross_entropy_loss = cross_entropy_loss_criterion(logits, labels)
-            center_loss = center_loss_criterion(features, labels)
-
-            loss = cross_entropy_loss + args.lambda_ * center_loss
-            total_loss += loss.data
-            total_cross_entropy_loss += cross_entropy_loss.data
-            total_center_loss += center_loss.data
+            logits = model(inputs)
 
             _, pred = logits.topk(1, 1)
             pred = pred.t()
             correct = pred.eq(labels).sum().float()
             total_accuracy += correct.data / inputs.size(0)
-        return total_accuracy / num, total_loss / num, total_cross_entropy_loss / num, total_center_loss / num
+        return total_accuracy / num
 
 
 if __name__ == '__main__':

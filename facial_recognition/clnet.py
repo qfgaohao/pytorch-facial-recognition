@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from .resnet import resnet18, resnet34, resnet50
-from torchvision import models
 
 
 class CLNet(nn.Module):

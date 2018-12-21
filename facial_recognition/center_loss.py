@@ -12,7 +12,7 @@ class CenterLoss(nn.Module):
     def forward(self, features, labels):
         active_centers = self.centers[labels]
         diff = active_centers - features
-        loss = torch.sum(diff ** 2) / diff.size(0) / 2
+        loss = torch.mean(diff ** 2)
         with torch.no_grad():
             # update centers
             label_counts = torch.bincount(labels)

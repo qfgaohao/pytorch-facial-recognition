@@ -1,7 +1,7 @@
 import torch
 import sys
 from facial_recognition.lfw_test import test
-from facial_recognition.clnet import resnet34_clnet,resnet50_clnet
+from facial_recognition.clnet import resnet34_clnet,resnet50_clnet, resnet18_clnet
 
 
 if __name__ == '__main__':
@@ -12,6 +12,6 @@ if __name__ == '__main__':
     model = sys.argv[1]
     lfw_dir = sys.argv[2]
     lfw_test_file = sys.argv[3]
-    net = resnet50_clnet(128, 10575)
+    net = resnet18_clnet(128, 10575)
     net.load(sys.argv[1])
     test(net, lfw_dir, lfw_test_file)
