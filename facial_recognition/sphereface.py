@@ -74,15 +74,10 @@ class SpereFace(nn.Module):
         features = self.fc1(x)
         if self.training:
             # normalize weight per class
-            with torch.no_grad():
-                norm = (self.fc2.weight ** 2).sum(dim=1, keepdim=True).sqrt()
-                #print('norm', norm)
-                self.fc2.weight.data = self.fc2.weight.data / norm
-            # print('fc2-norm', (self.fc2.weight ** 2).sum(dim=0).sqrt())
-            #print('fc2', self.fc2.weight.data)
             logits = self.fc2(features)
-            # print('fc2-mean', self.fc2.weight.mean(dim=0))
-            # print('fc2-std', self.fc2.weight.std(dim=0))
+            with torch.no_grad():
+                weight_norm =(self.fc2.weight**2).sum(dim=1, keepdim=True).sqrt().t()
+            logits = logits / weight_norm
             return features, logits
         else:
             return features

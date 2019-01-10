@@ -65,10 +65,12 @@ class ASoftmaxLoss(nn.Module):
 
     def forward(self, features, logits, labels, annealing_lambda=0):
         global debug_iter
-        norm = (features * features).sum(dim=1, keepdim=True).sqrt()
 
-        sub_logits = logits.gather(1, labels.view(-1, 1))
-        cos_logits = sub_logits / norm
+        with torch.no_grad():
+            features_norm = (features ** 2).sum(dim=1, keepdim=True).sqrt()
+        x_cos_theta = logits.gather(1, labels.view(-1, 1))
+        cos_theta = x_cos_theta / features_norm
+        cos_theta = cos_theta.clamp(-1, 1)
         # if debug_iter % 50 == 0:
         #     print('features', features.data)
         #     print('norm', norm)
@@ -76,20 +78,21 @@ class ASoftmaxLoss(nn.Module):
         #     print('cos_logits', cos_logits)
         #     print('featres-mean', features.mean(dim=1))
         #     print('featres-std', features.std(dim=1))
-        m_cos_logits = cos(cos_logits, self.m)
+        m_cos_theta = cos(cos_theta, self.m)
+        x_m_cos_theta = features_norm * m_cos_theta
+
         # print('m_cos_logits', m_cos_logits.min().data, m_cos_logits.max().data)
         # print('cos_logits', cos_logits.min().data, cos_logits.max().data)
-        mlogits = (annealing_lambda * sub_logits + m_cos_logits * norm) / (1 + annealing_lambda)
-        logits = torch.cat([logits, mlogits], 1)
+        f_y = (annealing_lambda * x_cos_theta + x_m_cos_theta) / (1 + annealing_lambda)
+        logits = torch.cat([logits, f_y], 1)
         max_logit, _ = torch.max(logits, 1, keepdim=True)
         max_logit = max_logit.clamp(min=0)
-        mlogits = mlogits - max_logit
+        f_y = f_y - max_logit
         logits = logits - max_logit
         # print('--sub_logts', sub_logits.min().data, sub_logits.max().data)
-        sub_logits = sub_logits - max_logit
+        x_cos_theta = x_cos_theta - max_logit
         # print('sub_logts', sub_logits.min().data, sub_logits.max().data)
-        loss = torch.exp(mlogits) / (torch.sum(torch.exp(logits), 1, keepdim=True) - torch.exp(sub_logits))
-        # print('loss', loss.min().data, loss.max().data)
+        loss = torch.exp(f_y) / (torch.sum(torch.exp(logits), 1, keepdim=True) - torch.exp(x_cos_theta))
         loss = -torch.log(loss)
         if self.reduce:
             loss = torch.mean(loss)
