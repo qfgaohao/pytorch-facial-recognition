@@ -6,23 +6,34 @@ class Block(nn.Module):
     def __init__(self, num_residual_layers, in_channels, out_channels,
                  kernel_size=3, stride=2, padding=1, remove_last_relu=False):
         super(Block, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding),
-            nn.PReLU()
-        )
+        if remove_last_relu and num_residual_layers == 0:
+            self.conv = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding),
+                nn.BatchNorm2d(out_channels)
+            )
+        else:
+            self.conv = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding),
+                nn.BatchNorm2d(out_channels),
+                nn.PReLU()
+            )
         layers = []
         for i in range(num_residual_layers):
             if remove_last_relu and i + 1 == num_residual_layers:
                 layer = nn.Sequential(
                     nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding),
                     nn.PReLU(),
+                    nn.BatchNorm2d(out_channels),
                     nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding),
+                    nn.BatchNorm2d(out_channels)
                 )
             else:
                 layer = nn.Sequential(
                     nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding),
+                    nn.BatchNorm2d(out_channels),
                     nn.PReLU(),
                     nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding),
+                    nn.BatchNorm2d(out_channels),
                     nn.PReLU()
                 )
             layers.append(layer)
@@ -51,7 +62,10 @@ class SpereFace(nn.Module):
         if isinstance(feature_map_size, int):
             feature_map_size = (feature_map_size, feature_map_size)
         self.fc1 = nn.Linear(feature_map_size[0] * feature_map_size[1] * out_channels_per_block[-1], dim)
-        self.fc2 = torch.nn.utils.weight_norm(nn.Linear(dim, num_classes, bias=False), 'weight', dim=1)
+        if num_classes is not None:
+            #self.fc2 = torch.nn.utils.weight_norm(nn.Linear(dim, num_classes, bias=False), 'weight')
+            #print('weight', self.fc2.weight.size())
+            self.fc2 = nn.Linear(dim, num_classes, bias=False)
 
     def forward(self, x):
         for block in self.blocks:
@@ -59,8 +73,17 @@ class SpereFace(nn.Module):
         x = x.view(x.size(0), -1)
         features = self.fc1(x)
         if self.training:
+            # normalize weight per class
+            with torch.no_grad():
+                norm = (self.fc2.weight ** 2).sum(dim=1, keepdim=True).sqrt()
+                #print('norm', norm)
+                self.fc2.weight.data = self.fc2.weight.data / norm
+            # print('fc2-norm', (self.fc2.weight ** 2).sum(dim=0).sqrt())
+            #print('fc2', self.fc2.weight.data)
             logits = self.fc2(features)
-            return logits
+            # print('fc2-mean', self.fc2.weight.mean(dim=0))
+            # print('fc2-std', self.fc2.weight.std(dim=0))
+            return features, logits
         else:
             return features
 
@@ -68,7 +91,10 @@ class SpereFace(nn.Module):
         torch.save(self.state_dict(), model_path)
 
     def load(self, model):
-        self.load_state_dict(torch.load(model, map_location=lambda storage, loc: storage))
+        state_dict = torch.load(model, map_location=lambda storage, loc: storage)
+        if not hasattr(self, 'fc2'):
+            state_dict = {k: v for k, v in state_dict.items() if k not in set(["fc2.weight"])}
+        self.load_state_dict(state_dict)
 
 
 def sphereface4(feature_map_size, dim=512, num_classes: int=None):

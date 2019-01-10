@@ -42,18 +42,12 @@ def read_test_file(lfw_image_dir, lfw_test_file):
     return images1, images2, labels
 
 
-def compute_distance(embeddings1, embeddings2):
-    diff = embeddings1 - embeddings2
-    distances = torch.sqrt(torch.sum(diff**2, 1))
-    return distances
-
-
 def pick_best_threshold(train_distances, labels):
     max_correct = 0
     max_threshold = 0
-    for threshold in range(1, 30, 1):
-        threshold = threshold / 10
-        pred = train_distances <= threshold
+    for threshold in range(-30, 30, 1):
+        threshold = threshold / 30
+        pred = train_distances >= threshold
         correct = pred.eq(labels).sum()
         if correct > max_correct:
             max_threshold = threshold
@@ -62,56 +56,56 @@ def pick_best_threshold(train_distances, labels):
     return max_threshold, max_correct.float() / labels.size(0)
 
 
+def compute_embeddings(net, images, device):
+    inputs = [test_transform(160)(Image.open(img)) for img in images]
+    inputs = torch.stack(inputs).to(device)
+
+    flipped_inputs = [test_transform(160)(Image.open(img).transpose(Image.FLIP_LEFT_RIGHT)) for img in images]
+    flipped_inputs = torch.stack(flipped_inputs).to(device)
+
+    embeddings = net(inputs)
+    flipped_embeddings = net(flipped_inputs)
+    embeddings = torch.cat([embeddings, flipped_embeddings], dim=1)
+    return embeddings
+
+
 def batch_inference(images1, images2, net, device, batch_size=100):
     all_distances = []
     for i in range(0, len(images1) - batch_size + 1, batch_size):
         end = min(len(images1), i + batch_size)
-        sub_images1 = images1[i: end]
-        sub_images1 = [test_transform(160)(Image.open(img)) for img in sub_images1]
-        sub_images1 = torch.stack(sub_images1)
-        sub_images1 = sub_images1.to(device)
-
-        sub_images2 = images2[i: end]
-        sub_images2 = [test_transform(160)(Image.open(img)) for img in sub_images2]
-        sub_images2 = torch.stack(sub_images2)
-        sub_images2 = sub_images2.to(device)
-
-        embeddings1 = net(sub_images1)
-        embeddings2 = net(sub_images2)
-        distances = compute_distance(embeddings1, embeddings2)
+        embeddings1 = compute_embeddings(net, images1[i: end], device)
+        embeddings2 = compute_embeddings(net, images2[i: end], device)
+        distances = torch.nn.functional.cosine_similarity(embeddings1, embeddings2).data
+        del embeddings1, embeddings2
         all_distances.append(distances)
     all_distances = torch.cat(all_distances)
     return all_distances
 
 
-def test(clnet, lfw_image_dir, lfw_test_file, fold=10, device=None):
-    clnet.train(False)
+def test(net, lfw_image_dir, lfw_test_file, fold=10, device=None):
+    net.train(False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    clnet.to(device)
+    net.to(device)
     images1, images2, labels = read_test_file(lfw_image_dir, lfw_test_file)
     logging.info(f"Found {len(labels)} pairs to test.")
     labels = torch.tensor(labels, dtype=torch.uint8, device=device)
-    distances = batch_inference(images1, images2, clnet, device=device)
-    print('raw distance size', distances.size())
+    distances = batch_inference(images1, images2, net, device=device)
     del images2
     del images1
     num = distances.size(0)
     test_size = int(num/fold)
     random_indices = torch.randperm(num)
     distances = distances[random_indices]
-    print(distances)
-    print('distances size', distances.size())
     labels = labels[random_indices]
     labels.to(device)
     accuracy = 0
-    print(labels)
     for i in range(0, num - test_size + 1, test_size):
         train_labels = torch.cat([labels[0:i], labels[i + test_size:]])
         train_distances = torch.cat([distances[0:i], distances[i + test_size:]])
         test_distances = distances[i:i + test_size]
         test_labels = labels[i:i + test_size]
         threshold, train_accuracy = pick_best_threshold(train_distances, train_labels)
-        pred = test_distances <= threshold
+        pred = test_distances >= threshold
         correct = pred.eq(test_labels).sum().float()
         test_accuracy = correct / test_size
         logging.info(f"Picked threshold: {threshold:.2f}. Train accuracy: {train_accuracy:.4f}."
