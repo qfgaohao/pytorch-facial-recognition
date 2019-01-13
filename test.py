@@ -14,7 +14,7 @@ if __name__ == '__main__':
     lfw_dir = sys.argv[2]
     lfw_test_file = sys.argv[3]
 
-    net = mobilenetv2_clnet(512, None, 160)
+    net = mobilenetv2_clnet(256, None, 160)
     net.train(False)
     net.load(sys.argv[1])
     test(net, lfw_dir, lfw_test_file)

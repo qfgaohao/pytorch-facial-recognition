@@ -71,6 +71,7 @@ class ASoftmaxLoss(nn.Module):
         x_cos_theta = logits.gather(1, labels.view(-1, 1))
         cos_theta = x_cos_theta / features_norm
         cos_theta = cos_theta.clamp(-1, 1)
+        x_cos_theta = cos_theta * features_norm
         # if debug_iter % 50 == 0:
         #     print('features', features.data)
         #     print('norm', norm)
@@ -78,12 +79,12 @@ class ASoftmaxLoss(nn.Module):
         #     print('cos_logits', cos_logits)
         #     print('featres-mean', features.mean(dim=1))
         #     print('featres-std', features.std(dim=1))
-        m_cos_theta = cos(cos_theta, self.m)
-        x_m_cos_theta = features_norm * m_cos_theta
+        cos_m_theta = cos(cos_theta, self.m)
+        x_cos_m_theta = features_norm * cos_m_theta
 
-        # print('m_cos_logits', m_cos_logits.min().data, m_cos_logits.max().data)
-        # print('cos_logits', cos_logits.min().data, cos_logits.max().data)
-        f_y = (annealing_lambda * x_cos_theta + x_m_cos_theta) / (1 + annealing_lambda)
+        # print('cos_theta', cos_theta.min().data, cos_theta.max().data)
+        # print('m_cos_theta', m_cos_theta.min().data, m_cos_theta.max().data)
+        f_y = (annealing_lambda * x_cos_theta + x_cos_m_theta) / (1 + annealing_lambda)
         logits = torch.cat([logits, f_y], 1)
         max_logit, _ = torch.max(logits, 1, keepdim=True)
         max_logit = max_logit.clamp(min=0)

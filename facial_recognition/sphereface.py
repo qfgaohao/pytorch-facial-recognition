@@ -76,8 +76,8 @@ class SpereFace(nn.Module):
             # normalize weight per class
             logits = self.fc2(features)
             with torch.no_grad():
-                weight_norm =(self.fc2.weight**2).sum(dim=1, keepdim=True).sqrt().t()
-            logits = logits / weight_norm
+                weight_norm = (self.fc2.weight**2).sum(dim=1, keepdim=True).sqrt()
+            logits = logits / weight_norm.t()
             return features, logits
         else:
             return features

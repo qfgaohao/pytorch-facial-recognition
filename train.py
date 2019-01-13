@@ -147,7 +147,7 @@ def main():
     #torch.manual_seed(1)
     num_samples = len(dataset)
     num_train = int(num_samples * 0.95)
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [num_train, num_samples - num_train])
+    train_dataset, val_dataset = torch.utils.data.dataset.random_split(dataset, [num_train, num_samples - num_train])
     logging.info(f"Train data size {len(train_dataset)}. Validation data size: {len(val_dataset)}.")
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
