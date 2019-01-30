@@ -7,7 +7,7 @@ from PIL import Image
 
 
 def name2path(lfw_image_dir, name, id):
-    path = os.path.join(lfw_image_dir, name, f"{name}_{int(id):04d}.png")
+    path = os.path.join(lfw_image_dir, name, f"{name}_{int(id):04d}.jpg")
     return path
 
 
@@ -75,14 +75,13 @@ def compute_embeddings(net, images, input_size, flip, device):
     return embeddings
 
 
-def batch_inference(images1, images2, net, input_size, metric_fun, flip, device, batch_size=10):
+def batch_inference(images1, images2, net, input_size, metric_fun, flip, device, batch_size=1):
     all_distances = []
     for i in range(0, len(images1) - batch_size + 1, batch_size):
         end = min(len(images1), i + batch_size)
         embeddings1 = compute_embeddings(net, images1[i: end], input_size, flip, device)
         embeddings2 = compute_embeddings(net, images2[i: end], input_size, flip, device)
         distances = metric_fun(embeddings1, embeddings2).data
-        del embeddings1, embeddings2
         all_distances.append(distances)
     all_distances = torch.cat(all_distances)
     return all_distances
@@ -92,6 +91,7 @@ def test(net, lfw_image_dir, lfw_test_file,  input_size, metric, flip, fold=10, 
     net.train(False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net.to(device)
+    print('lfw_test_file', lfw_test_file)
     images1, images2, labels = read_test_file(lfw_image_dir, lfw_test_file)
     logging.info(f"Found {len(labels)} pairs to test.")
     labels = torch.tensor(labels, dtype=torch.uint8, device=device)

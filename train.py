@@ -165,9 +165,13 @@ def main():
         transforms.train_transform(input_size))
     num_classes = len(dataset.classes)
     logging.info(f"Num of classes: {num_classes}")
-    logging.info(f"Train data size {len(dataset)}")
+    num_samples = len(dataset)
+    num_train = int(num_samples * 0.95)
+    train_dataset, val_dataset = torch.utils.data.dataset.random_split(dataset, [num_train, num_samples - num_train])
+    logging.info(f"Train data size {len(train_dataset)}")
+    logging.info(f"Val data size {len(val_dataset)}")
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
 
@@ -247,8 +251,12 @@ def main():
     cudnn.benchmark = True
 
     train_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -257,7 +265,12 @@ def main():
             scheduler.step()
         loss = train(train_loader, model, criterion, optimizer, epoch)
         if epoch % args.validation_epochs == 0 or epoch == args.epochs - 1:
-            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Loss-{loss:.4f}.pth")
+            val_accuracy = validate(val_loader, model)
+            logging.info(
+                f"Epoch: {epoch}, "
+                f"Accuracy: {val_accuracy:.4f}, "
+            )
+            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Accuracy-{val_accuracy:.4f}-Loss-{loss:.4f}.pth")
             model.save(model_path)
             logging.info(f"Saved model {model_path}")
 
