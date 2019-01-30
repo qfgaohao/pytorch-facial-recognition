@@ -19,8 +19,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from facial_recognition.clnet import resnet18_clnet, resnet34_clnet, resnet50_clnet, mobilenetv2_clnet
 from facial_recognition.center_loss import CenterLoss
 from facial_recognition import transforms
-from facial_recognition.sphereface import sphereface4, sphereface10, sphereface20, sphereface36, sphereface64
+from facial_recognition.sphereface import sphereface4, sphereface10, sphereface20, sphereface36, sphereface64, \
+    mobilenet_sphereface
 from facial_recognition.asoftmax_loss import ASoftmaxLoss
+from facial_recognition.ccs_loss import CCSLoss
+from facial_recognition.ccs_net import resnet18_ccs_net, resnet34_ccs_net, mobilenetv2_ccs_net
 
 
 # Modified from https://github.com/pytorch/examples/blob/master/imagenet/main.py
@@ -37,10 +40,14 @@ models = {
     'sphereface20': sphereface20,
     'sphereface36': sphereface36,
     'sphereface64': sphereface64,
+    'sphereface_mb2': mobilenet_sphereface,
+    'resnet18_ccs_net': resnet18_ccs_net,
+    'resnet34_ccs_net': resnet34_ccs_net,
+    'mobilenetv2_ccs_net': mobilenetv2_ccs_net
 }
 model_names = list(models.keys())
 
-parser = argparse.ArgumentParser(description='PyTorch Center Loss Net Training')
+parser = argparse.ArgumentParser(description='PyTorch Facial Recognition Net Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet34_clnet',
@@ -51,18 +58,23 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet34_clnet',
 parser.add_argument('-d', '--dim', default=128, type=int, metavar='N',
                     help='the dimension of embeddings (default: 128)')
 
-parser.add_argument('-i', '--input-size', default=112, type=int, metavar='N',
-                    help='the input image size (default: 112).')
+parser.add_argument('--input-size', '-i', type=str,
+                    help='It can be a single int or two ints representing w and h')
 
-parser.add_argument('--lambda', default=0.01, dest='lambda_', type=float, metavar='M',
-                    help='lambda for center loss')
-parser.add_argument('--ms-lambda', default=0, dest='ms_lambda', type=float, metavar='M',
-                    help='lambda for the MS paper method')
-
-parser.add_argument('--alpha', default=0.5, type=float, metavar='M',
+parser.add_argument('--cl-alpha', default=0.5, type=float, metavar='M',
                     help='alpha for center loss')
+parser.add_argument('--cl-lambda', default=0.01, type=float, metavar='M',
+                    help='lambda for center loss')
+parser.add_argument('--ccs-lambda', default=0, type=float, metavar='M',
+                    help='lambda for the cosine similarity loss')
+parser.add_argument('--sf-min-lambda', default=10, type=float, metavar='M',
+                    help='a paramter to control the lambda in sphereface.')
+parser.add_argument('--sf-max-lambda', default=1000, type=float, metavar='M',
+                    help='a paramter to control the lambda in sphereface.')
+
+
 parser.add_argument('-m', default=4, type=int, metavar='N',
-                    help='m in a softmax loss')
+                    help='m in ASoftmax loss')
 parser.add_argument('-o', '--optimizer', default='sgd', type=str,
                     help="The optimizer can be sgd, adam, r")
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
@@ -79,7 +91,7 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
-parser.add_argument('--scheduler', default="multi-step", type=str,
+parser.add_argument('--scheduler', default=None, type=str,
                     help="Scheduler for SGD. It can one of multi-step or cosine")
 parser.add_argument('--milestones', default="80,100", type=str,
                     help="milestones for MultiStepLR")
@@ -114,6 +126,10 @@ def is_clnet(arch):
     return arch.endswith('clnet')
 
 
+def is_ccs_net(arch):
+    return arch.endswith('ccs_net')
+
+
 def main():
     global args
     args = parser.parse_args()
@@ -139,38 +155,46 @@ def main():
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size)
 
+    input_size = [int(v) for v in args.input_size.split(",")]
+    if len(input_size) == 1:
+        input_size = (input_size[0], input_size[0])
+    assert len(input_size) == 2
+
     dataset = datasets.ImageFolder(
         args.data,
-        transforms.train_transform(args.input_size))
+        transforms.train_transform(input_size))
     num_classes = len(dataset.classes)
     logging.info(f"Num of classes: {num_classes}")
-    #torch.manual_seed(1)
-    num_samples = len(dataset)
-    num_train = int(num_samples * 0.95)
-    train_dataset, val_dataset = torch.utils.data.dataset.random_split(dataset, [num_train, num_samples - num_train])
-    logging.info(f"Train data size {len(train_dataset)}. Validation data size: {len(val_dataset)}.")
+    logging.info(f"Train data size {len(dataset)}")
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
     else:
         train_sampler = None
 
     if is_sphereface_net(args.arch):
-        model = models[args.arch](7, args.dim, num_classes)
+        model = models[args.arch](args.dim, input_size, num_classes)
     elif is_clnet(args.arch):
         model = models[args.arch](args.dim, num_classes, args.input_size)
-    print(model)
+    elif is_ccs_net(args.arch):
+        model = models[args.arch](args.dim, num_classes)
 
     if args.resume:
         logging.info(f"Load pretrained model from {args.resume}.")
         model.load(args.resume)
-    # define loss function (criterion) and optimizer
+
     if is_clnet(args.arch):
         cross_entropy_loss_criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-        center_loss_criterion = CenterLoss(args.dim, num_classes, args.alpha).cuda(args.gpu)
+        center_loss_criterion = CenterLoss(args.dim, num_classes, args.cl_alpha).cuda(args.gpu)
         criterion = lambda features, logits, labels: cross_entropy_loss_criterion(logits, labels) + \
-                                           args.lambda_ * center_loss_criterion(features, labels)
+                                           args.cl_lambda * center_loss_criterion(features, labels)
     elif is_sphereface_net(args.arch):
         criterion = ASoftmaxLoss(args.m)
+    elif is_ccs_net(args.arch):
+        cross_entropy_loss_criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+        ccs_loss_criterion = CCSLoss()
+        criterion = lambda features, weight, logits, labels:\
+            cross_entropy_loss_criterion(logits, labels) + \
+            args.ccs_lambda * ccs_loss_criterion(features, weight, logits, labels)
 
     if args.resume:
         logging.info(f"Resume from the model {args.resume}")
@@ -192,10 +216,21 @@ def main():
             model = torch.nn.DataParallel(model).cuda()
             # center_loss_criterion.cuda()
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'rmsp':
+        optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        logging.fatal(f"Only SGD, Adam, and RMSProp are supported. However you may modify the code and add it.")
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+
     last_epoch = args.start_epoch if args.start_epoch > 0 else -1
+    scheduler = None
     if args.scheduler == 'multi-step':
         logging.info("Uses MultiStepLR scheduler.")
         milestones = [int(v.strip()) for v in args.milestones.split(",")]
@@ -204,7 +239,7 @@ def main():
     elif args.scheduler == 'cosine':
         logging.info("Uses CosineAnnealingLR scheduler.")
         scheduler = CosineAnnealingLR(optimizer, args.epochs, last_epoch=last_epoch)
-    else:
+    elif args.scheduler is not None:
         logging.fatal(f"Unsupported Scheduler: {args.scheduler}.")
         parser.print_help(sys.stderr)
         sys.exit(1)
@@ -212,30 +247,23 @@ def main():
     cudnn.benchmark = True
 
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
-
-    val_loader = torch.utils.data.DataLoader(
-       val_dataset,
-       batch_size=args.batch_size, shuffle=False,
-       num_workers=args.workers, pin_memory=True)
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        scheduler.step()
-        train(train_loader, model, criterion, optimizer, epoch)
+        if scheduler is not None:
+            scheduler.step()
+        loss = train(train_loader, model, criterion, optimizer, epoch)
         if epoch % args.validation_epochs == 0 or epoch == args.epochs - 1:
-            val_accuracy = validate(val_loader, model)
-            logging.info(
-                f"Epoch: {epoch}, "
-                f"Accuracy: {val_accuracy:.4f}, "
-            )
-            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Accuracy-{val_accuracy}.pth")
+            model_path = os.path.join(args.model_dir, f"{args.arch}-Epoch-{epoch}-Loss-{loss:.4f}.pth")
             model.save(model_path)
             logging.info(f"Saved model {model_path}")
 
+
 lambda_iter = 0
+
 
 def train(train_loader, model, criterion, optimizer, epoch):
     global lambda_iter, args
@@ -245,7 +273,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
     train_loss = 0
     train_accuracy = 0
     num = 0
-
+    all_loss = 0
+    all_num = 0
     for i, (inputs, labels) in enumerate(train_loader):
         num += 1
         lambda_iter += 1
@@ -255,15 +284,20 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         # compute output
         if is_clnet(args.arch):
-            features, logits, nomalized_logits = model(inputs)
+            features, logits = model(inputs)
+        elif is_ccs_net(args.arch):
+            features, weight, logits = model(inputs)
         else:
             features, logits = model(inputs)
+        lambda_ = 0.0
         if is_sphereface_net(args.arch):
-            lambda_ = max(2000 / (0.06 * lambda_iter + 1), 10)
+            factor = (args.sf_max_lambda/args.sf_min_lambda - 1) / 2000
+            lambda_ = max(args.sf_max_lambda / (factor * lambda_iter + 1), args.sf_min_lambda)
             loss = criterion(features, logits, labels, lambda_)
         elif is_clnet(args.arch):
-            lambda_ = args.ms_lambda
-            loss = (criterion(features, logits, labels) + lambda_ * torch.nn.functional.cross_entropy(nomalized_logits, labels))/(1 + lambda_)
+            loss = criterion(features, logits, labels)
+        elif is_ccs_net(args.arch):
+            loss = criterion(features, weight, logits, labels)
         else:
             raise ValueError(f"The net {args.arch} is not supported.")
         train_loss += loss.data
@@ -288,9 +322,12 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 f"Accuracy: {train_accuracy / num:.4f}, "
                 f"Training Loss: {train_loss / num:.4f}, "
             )
+            all_loss += train_loss
+            all_num += num
             train_loss = 0
             train_accuracy = 0
             num = 0
+    return all_loss / (all_num + 1**-10)
 
 
 def validate(val_loader, model):
