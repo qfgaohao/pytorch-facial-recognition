@@ -59,7 +59,7 @@ parser.add_argument('-d', '--dim', default=128, type=int, metavar='N',
                     help='the dimension of embeddings (default: 128)')
 
 parser.add_argument('--input-size', '-i', type=str,
-                    help='It can be a single int or two ints representing w and h')
+                    help='It can be a single int or two ints representing h and w. Height comes first.')
 
 parser.add_argument('--cl-alpha', default=0.5, type=float, metavar='M',
                     help='alpha for center loss')
@@ -320,14 +320,16 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 f"Iter: {i}, "
                 f"Lambda: {lambda_:.2f},"
                 f"Accuracy: {train_accuracy / num:.4f}, "
-                f"Training Loss: {train_loss / num:.4f}, "
+                f"Training Loss: {train_loss / num:.4f}"
             )
             all_loss += train_loss
             all_num += num
             train_loss = 0
             train_accuracy = 0
             num = 0
-    return all_loss / (all_num + 1**-10)
+    mean_loss = all_loss / (all_num + 1**-10)
+    logging.info(f"Epoch: {epoch}, Loss: {mean_loss}.")
+    return mean_loss
 
 
 def validate(val_loader, model):
